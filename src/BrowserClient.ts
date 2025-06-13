@@ -20,72 +20,81 @@ export class BrowserClient extends EventEmitter {
   }
 
   private async launchBrowser() {
-    const chromeArgs = []
+    try {
+      const chromeArgs = []
 
-    this.config.debugPort = await tryPort(this.config.debugPort)
+      this.config.debugPort = await tryPort(this.config.debugPort)
 
-    chromeArgs.push(`--remote-debugging-port=${this.config.debugPort}`)
+      chromeArgs.push(`--remote-debugging-port=${this.config.debugPort}`)
+      chromeArgs.push('--allow-file-access-from-files')
+      chromeArgs.push('--remote-allow-origins=*')
 
-    chromeArgs.push('--allow-file-access-from-files')
+      if (this.config.proxy && this.config.proxy.length > 0)
+        chromeArgs.push(`--proxy-server=${this.config.proxy}`)
 
-    chromeArgs.push('--remote-allow-origins=*')
+      if (this.config.otherArgs && this.config.otherArgs.length > 0)
+        chromeArgs.push(this.config.otherArgs)
 
-    // chromeArgs.push('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36')
+      const chromePath = this.config.chromeExecutable || this.getChromiumPath()
 
-    if (this.config.proxy && this.config.proxy.length > 0)
-      chromeArgs.push(`--proxy-server=${this.config.proxy}`)
+      if (!chromePath) {
+        throw new Error('No Chrome installation found, or no Chrome executable set in the settings')
+      }
 
-    if (this.config.otherArgs && this.config.otherArgs.length > 0)
-      chromeArgs.push(this.config.otherArgs)
+      if (platform() === 'linux')
+        chromeArgs.push('--no-sandbox')
 
-    const chromePath = this.config.chromeExecutable || this.getChromiumPath()
+      const extensionSettings = workspace.getConfiguration('browse-lite')
+      const ignoreHTTPSErrors = extensionSettings.get<boolean>('ignoreHttpsErrors')
 
-    if (!chromePath) {
-      window.showErrorMessage(
-        'No Chrome installation found, or no Chrome executable set in the settings',
-      )
-      return
+      let userDataDir
+      if (this.config.storeUserData)
+        userDataDir = join(this.ctx.globalStorageUri.fsPath, 'UserData')
+
+      this.browser = await puppeteer.launch({
+        executablePath: chromePath,
+        args: chromeArgs,
+        ignoreHTTPSErrors,
+        ignoreDefaultArgs: ['--mute-audio'],
+        userDataDir,
+      })
+
+      // close the initial empty page
+      const pages = await this.browser.pages()
+      await Promise.all(pages.map(page => page.close()))
     }
-
-    if (platform() === 'linux')
-      chromeArgs.push('--no-sandbox')
-
-    const extensionSettings = workspace.getConfiguration('browse-lite')
-    const ignoreHTTPSErrors = extensionSettings.get<boolean>('ignoreHttpsErrors')
-
-    let userDataDir
-    if (this.config.storeUserData)
-      userDataDir = join(this.ctx.globalStorageUri.fsPath, 'UserData')
-
-    this.browser = await puppeteer.launch({
-      executablePath: chromePath,
-      args: chromeArgs,
-      ignoreHTTPSErrors,
-      ignoreDefaultArgs: ['--mute-audio'],
-      userDataDir,
-    })
-
-    // close the initial empty page
-    ; (await this.browser.pages()).map(i => i.close())
+    catch (error) {
+      window.showErrorMessage(`Failed to launch browser: ${error.message}`)
+      throw error
+    }
   }
 
   public async newPage(): Promise<BrowserPage> {
-    if (!this.browser)
-      await this.launchBrowser()
+    try {
+      if (!this.browser)
+        await this.launchBrowser()
 
-    const page = new BrowserPage(this.browser, await this.browser.newPage())
-    await page.launch()
-    return page
+      const page = new BrowserPage(this.browser, await this.browser.newPage())
+      await page.launch()
+      return page
+    }
+    catch (error) {
+      window.showErrorMessage(`Failed to create new page: ${error.message}`)
+      throw error
+    }
   }
 
-  public dispose(): Promise<void> {
-    return new Promise((resolve) => {
+  public async dispose(): Promise<void> {
+    try {
       if (this.browser) {
-        this.browser.close()
+        await this.browser.close()
         this.browser = null
       }
-      resolve()
-    })
+    }
+    catch (error) {
+      window.showErrorMessage(`Failed to dispose browser: ${error.message}`)
+      throw error
+    }
   }
 
   public getChromiumPath(): string | undefined {

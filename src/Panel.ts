@@ -232,20 +232,40 @@ export class Panel extends EventEmitter2 {
 
   public dispose() {
     this.disposed = true
-    if (this._panel)
-      this._panel.dispose()
+    
+    // 先清理子面板
+    if (this.debugPanel) {
+      this.debugPanel.dispose()
+      this.debugPanel = undefined
+    }
 
+    // 清理父面板引用
+    if (this.parentPanel) {
+      this.parentPanel = undefined
+    }
+
+    // 清理面板
+    if (this._panel) {
+      this._panel.dispose()
+      this._panel = null
+    }
+
+    // 清理浏览器页面
     if (this.browserPage) {
       this.browserPage.dispose()
       this.browserPage = null
     }
+
+    // 清理所有可释放资源
     while (this.disposables.length) {
-      const x = this.disposables.pop()
-      if (x)
-        x.dispose()
+      const disposable = this.disposables.pop()
+      if (disposable)
+        disposable.dispose()
     }
-    this.emit('disposed')
+
+    // 清理事件监听器
     this.removeAllListeners()
+    this.emit('disposed')
   }
 
   private handleOpenFileRequest(params: any) {

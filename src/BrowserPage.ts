@@ -25,103 +25,125 @@ export class BrowserPage extends EnhancedEventEmitter {
     return this.page.mainFrame()._id
   }
 
-  public dispose() {
-    this.removeAllElseListeners()
-    // @ts-expect-error
-    this.removeAllListeners()
-    this.client.detach()
-    Promise.allSettled([
-      this.page.removeExposedFunction(ExposedFunc.EnableCopyPaste),
-      this.page.removeExposedFunction(ExposedFunc.EmitCopy),
-      this.page.removeExposedFunction(ExposedFunc.GetPaste),
-    ]).then(() => {
-      this.page.close()
-    })
+  public async dispose() {
+    try {
+      this.removeAllElseListeners()
+      this.removeAllListeners()
+      
+      if (this.client) {
+        await this.client.detach()
+      }
+
+      await Promise.allSettled([
+        this.page.removeExposedFunction(ExposedFunc.EnableCopyPaste),
+        this.page.removeExposedFunction(ExposedFunc.EmitCopy),
+        this.page.removeExposedFunction(ExposedFunc.GetPaste),
+      ])
+
+      await this.page.close()
+    }
+    catch (error) {
+      console.error('Error disposing BrowserPage:', error)
+      throw error
+    }
   }
 
   public async send(action: string, data: object = {}, callbackId?: number) {
-    // console.log('► browserPage.send', action)
-    switch (action) {
-      case 'Page.goForward':
-        await this.page.goForward()
-        break
-      case 'Page.goBackward':
-        await this.page.goBack()
-        break
-      case 'Clipboard.readText':
-        try {
-          this.emit({
-            callbackId,
-            result: await this.clipboard.readText(),
-          } as any)
-        }
-        catch (e) {
-          this.emit({
-            callbackId,
-            error: e.message,
-          } as any)
-        }
-        break
-      default:
-        this.client
-          .send(action as any, data)
-          .then((result: any) => {
+    try {
+      switch (action) {
+        case 'Page.goForward':
+          await this.page.goForward()
+          break
+        case 'Page.goBackward':
+          await this.page.goBack()
+          break
+        case 'Clipboard.readText':
+          try {
+            const text = await this.clipboard.readText()
+            this.emit({
+              callbackId,
+              result: text,
+            } as any)
+          }
+          catch (error) {
+            this.emit({
+              callbackId,
+              error: error.message,
+            } as any)
+          }
+          break
+        default:
+          try {
+            const result = await this.client.send(action as any, data)
             this.emit({
               callbackId,
               result,
             } as any)
-          })
-          .catch((err: any) => {
+          }
+          catch (error) {
             this.emit({
               callbackId,
-              error: err.message,
+              error: error.message,
             } as any)
-          })
+          }
+      }
+    }
+    catch (error) {
+      console.error(`Error in BrowserPage.send(${action}):`, error)
+      this.emit({
+        callbackId,
+        error: error.message,
+      } as any)
     }
   }
 
   public async launch(): Promise<void> {
-    await Promise.allSettled([
-      // TODO setting for enable sync copy and paste
-      this.page.exposeFunction(ExposedFunc.EnableCopyPaste, () => true),
-      this.page.exposeFunction(ExposedFunc.EmitCopy, (text: string) => this.clipboard.writeText(text)),
-      this.page.exposeFunction(ExposedFunc.GetPaste, () => this.clipboard.readText()),
-    ])
-    this.page.evaluateOnNewDocument(() => {
-      // custom embedded devtools
-      localStorage.setItem('screencastEnabled', 'false')
-      localStorage.setItem('panel-selectedTab', 'console')
+    try {
+      await Promise.allSettled([
+        this.page.exposeFunction(ExposedFunc.EnableCopyPaste, () => true),
+        this.page.exposeFunction(ExposedFunc.EmitCopy, (text: string) => this.clipboard.writeText(text)),
+        this.page.exposeFunction(ExposedFunc.GetPaste, () => this.clipboard.readText()),
+      ])
 
-      // sync copy and paste
-      if (window[ExposedFunc.EnableCopyPaste]?.()) {
-        const copyHandler = (event: ClipboardEvent) => {
-          const text = event.clipboardData?.getData('text/plain') || document.getSelection()?.toString()
-          text && window[ExposedFunc.EmitCopy]?.(text)
+      await this.page.evaluateOnNewDocument(() => {
+        // custom embedded devtools
+        localStorage.setItem('screencastEnabled', 'false')
+        localStorage.setItem('panel-selectedTab', 'console')
+
+        // sync copy and paste
+        if (window[ExposedFunc.EnableCopyPaste]?.()) {
+          const copyHandler = (event: ClipboardEvent) => {
+            const text = event.clipboardData?.getData('text/plain') || document.getSelection()?.toString()
+            text && window[ExposedFunc.EmitCopy]?.(text)
+          }
+          document.addEventListener('copy', copyHandler)
+          document.addEventListener('cut', copyHandler)
+          document.addEventListener('paste', async (event) => {
+            event.preventDefault()
+            const text = await window[ExposedFunc.GetPaste]?.()
+            text && document.execCommand('insertText', false, text)
+          })
         }
-        document.addEventListener('copy', copyHandler)
-        document.addEventListener('cut', copyHandler)
-        document.addEventListener('paste', async (event) => {
-          event.preventDefault()
-          const text = await window[ExposedFunc.GetPaste]?.()
-          text && document.execCommand('insertText', false, text)
-        })
-      }
-    })
+      })
 
-    this.page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: isDarkTheme() ? 'dark' : 'light' }])
+      await this.page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: isDarkTheme() ? 'dark' : 'light' }])
 
-    this.client = await this.page.target().createCDPSession()
+      this.client = await this.page.target().createCDPSession()
 
-    // @ts-expect-error
-    EventEmitterEnhancer.modifyInstance(this.client)
+      // @ts-expect-error
+      EventEmitterEnhancer.modifyInstance(this.client)
 
-    // @ts-expect-error
-    this.client.else((action: string, data: object) => {
-      // console.log('◀ browserPage.received', action)
-      this.emit({
-        method: action,
-        result: data,
-      } as any)
-    })
+      // @ts-expect-error
+      this.client.else((action: string, data: object) => {
+        this.emit({
+          method: action,
+          result: data,
+        } as any)
+      })
+    }
+    catch (error) {
+      console.error('Error launching BrowserPage:', error)
+      throw error
+    }
   }
 }

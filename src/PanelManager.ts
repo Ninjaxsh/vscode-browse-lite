@@ -24,85 +24,124 @@ export class PanelManager extends EventEmitter.EventEmitter2 {
   }
 
   private async refreshSettings() {
-    const prev = this.config
-
-    this.config = {
-      ...getConfigs(this.ctx),
-      debugPort: prev.debugPort,
+    try {
+      const prev = this.config
+      this.config = {
+        ...getConfigs(this.ctx),
+        debugPort: prev.debugPort,
+      }
+    }
+    catch (error) {
+      console.error('Error refreshing settings:', error)
+      throw error
     }
   }
 
   public async create(startUrl: string | Uri = this.config.startUrl) {
-    this.refreshSettings()
+    try {
+      await this.refreshSettings()
 
-    if (!this.browser)
-      this.browser = new BrowserClient(this.config, this.ctx)
+      if (!this.browser)
+        this.browser = new BrowserClient(this.config, this.ctx)
 
-    const panel = new Panel(this.config, this.browser)
+      const panel = new Panel(this.config, this.browser)
 
-    panel.once('disposed', () => {
-      if (this.current === panel) {
-        this.current = undefined
-        commands.executeCommand('setContext', 'browse-lite-active', false)
-      }
-      this.panels.delete(panel)
-      if (this.panels.size === 0) {
-        this.browser.dispose()
-        this.browser = null
-      }
+      panel.once('disposed', async () => {
+        try {
+          if (this.current === panel) {
+            this.current = undefined
+            await commands.executeCommand('setContext', 'browse-lite-active', false)
+          }
+          this.panels.delete(panel)
+          if (this.panels.size === 0) {
+            await this.browser.dispose()
+            this.browser = null
+          }
 
-      this.emit('windowDisposed', panel)
-    })
+          this.emit('windowDisposed', panel)
+        }
+        catch (error) {
+          console.error('Error disposing panel:', error)
+        }
+      })
 
-    panel.on('windowOpenRequested', (params) => {
-      this.emit('windowOpenRequested', params)
-    })
+      panel.on('windowOpenRequested', (params) => {
+        this.emit('windowOpenRequested', params)
+      })
 
-    panel.on('focus', () => {
-      this.current = panel
-      commands.executeCommand('setContext', 'browse-lite-active', true)
-    })
+      panel.on('focus', async () => {
+        try {
+          this.current = panel
+          await commands.executeCommand('setContext', 'browse-lite-active', true)
+        }
+        catch (error) {
+          console.error('Error setting focus context:', error)
+        }
+      })
 
-    panel.on('blur', () => {
-      if (this.current === panel) {
-        this.current = undefined
-        commands.executeCommand('setContext', 'browse-lite-active', false)
-      }
-    })
+      panel.on('blur', async () => {
+        try {
+          if (this.current === panel) {
+            this.current = undefined
+            await commands.executeCommand('setContext', 'browse-lite-active', false)
+          }
+        }
+        catch (error) {
+          console.error('Error setting blur context:', error)
+        }
+      })
 
-    this.panels.add(panel)
+      this.panels.add(panel)
 
-    await panel.launch(startUrl.toString())
+      await panel.launch(startUrl.toString())
 
-    this.emit('windowCreated', panel)
+      this.emit('windowCreated', panel)
 
-    this.ctx.subscriptions.push({
-      dispose: () => panel.dispose(),
-    })
+      this.ctx.subscriptions.push({
+        dispose: () => panel.dispose(),
+      })
 
-    return panel
+      return panel
+    }
+    catch (error) {
+      console.error('Error creating panel:', error)
+      throw error
+    }
   }
 
   public async createFile(filepath: string) {
-    if (!filepath)
-      return
+    try {
+      if (!filepath)
+        return
 
-    const panel = await this.create(`file://${filepath}`)
-    if (getConfig('browse-lite.localFileAutoReload')) {
-      panel.disposables.push(
-        workspace.createFileSystemWatcher(filepath, true, false, false).onDidChange(() => {
-        // TODO: check filename
-          panel.reload()
-        }),
-      )
+      const panel = await this.create(`file://${filepath}`)
+      if (getConfig('browse-lite.localFileAutoReload')) {
+        const watcher = workspace.createFileSystemWatcher(filepath, true, false, false)
+        panel.disposables.push(
+          watcher.onDidChange(() => {
+            panel.reload()
+          }),
+        )
+      }
+      return panel
     }
-    return panel
+    catch (error) {
+      console.error('Error creating file panel:', error)
+      throw error
+    }
   }
 
-  public disposeByUrl(url: string) {
-    this.panels.forEach((b: Panel) => {
-      if (b.config.startUrl === url)
-        b.dispose()
-    })
+  public async disposeByUrl(url: string) {
+    try {
+      const disposePromises = Array.from(this.panels)
+        .filter((panel: Panel) => panel.config.startUrl === url)
+        .map(panel => panel.dispose())
+      
+      await Promise.all(disposePromises)
+    }
+    catch (error) {
+      console.error('Error disposing panels by URL:', error)
+      throw error
+    }
   }
 }
